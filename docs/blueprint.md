@@ -169,7 +169,7 @@ AI Profile Summary
 
 A personalized profile generated from onboarding and interactions.
 
-Blind Spot Detection
+BLIND SPOT DETECTION  
 
 The core differentiator of Stratify AI.
 
