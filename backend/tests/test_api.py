@@ -56,9 +56,9 @@ def test_authenticated_user_can_start_onboarding(client):
             "password": "TestPassword123!",
         },
     )
-    
+
     assert signup.status_code in (200, 201)
-    
+
     # Log in and reuse the returned authentication data.
     login = client.post(
         "/auth/login",
