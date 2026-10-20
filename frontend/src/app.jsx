@@ -1200,7 +1200,15 @@ export default function App() {
               <div className="chat-page-thread" aria-live="polite">
                 {messages.length === 0 ? (
                   <div className="chat-empty-state">
-                    <span className="chat-spark">S.</span>
+                    <span className="chat-spark" aria-hidden="true">
+                      <svg viewBox="0 0 36 36" fill="none">
+                        <path d="M18 5v8m0 0L8 19m10-6 10 6M8 19v11m20-11v11" />
+                        <circle cx="18" cy="5" r="2.5" />
+                        <circle cx="18" cy="13" r="2.5" />
+                        <circle cx="8" cy="30" r="2.5" />
+                        <circle cx="28" cy="30" r="2.5" />
+                      </svg>
+                    </span>
                     <h2>Start with the situation.</h2>
                     <p>
                       What are you deciding, and what feels unclear right now?

@@ -979,11 +979,22 @@
   width: 42px;
   height: 42px;
   place-items: center;
-  border: 1px solid rgba(183, 154, 104, 0.55);
-  border-radius: 50%;
-  color: #d3b77e;
-  font-family: "Bodoni Moda", Georgia, serif;
-  font-size: 16px;
+  color: #9cc2bb;
+}
+
+.chat-spark svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  stroke: currentColor;
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chat-spark circle {
+  fill: #121516;
+  stroke: currentColor;
 }
 
 .chat-empty-state h3 {
@@ -1623,7 +1634,6 @@
 }
 
 .chat-spark {
-  border-color: #526b69;
   color: #b8d3ce;
 }
 
