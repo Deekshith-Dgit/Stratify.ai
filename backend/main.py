@@ -48,6 +48,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://stratify-ai-vert.vercel.app",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(auth_router)
 app.include_router(onboarding_router)
 app.include_router(roadmap_router)
