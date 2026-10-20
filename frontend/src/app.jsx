@@ -857,9 +857,21 @@ export default function App() {
 
   if (screen === "checking") {
     return (
-      <main className="app-shell">
-        <p className="app-muted">Preparing your space...</p>
-        {error && <p className="app-error">{error}</p>}
+      <main className="app-shell loading-screen">
+        <div className="welcome-brand loading-brand" aria-label="Stratify AI">
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 36 36" fill="none">
+              <path d="M18 5v8m0 0L8 19m10-6 10 6M8 19v11m20-11v11" />
+              <circle cx="18" cy="5" r="2.5" />
+              <circle cx="18" cy="13" r="2.5" />
+              <circle cx="8" cy="30" r="2.5" />
+              <circle cx="28" cy="30" r="2.5" />
+            </svg>
+          </span>
+          <span className="brand-name">STRATIFY AI</span>
+        </div>
+        <p className="app-muted" role="status">Preparing your space...</p>
+        {error && <p className="app-error" role="alert">{error}</p>}
       </main>
     );
   }

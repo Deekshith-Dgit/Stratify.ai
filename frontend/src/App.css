@@ -190,6 +190,22 @@
   font-family: var(--font-ui, "DM Sans", sans-serif);
 }
 
+.loading-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.loading-brand {
+  color: #f0f0f2;
+}
+
+.loading-screen > .app-muted {
+  margin: 0;
+}
+
 .app-panel {
   width: min(100%, 520px);
   margin: 7vh auto;
