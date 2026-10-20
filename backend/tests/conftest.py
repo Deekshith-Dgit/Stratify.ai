@@ -1,26 +1,37 @@
-
-import os
-
 import pytest
 from fastapi.testclient import TestClient
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    # Set a test-only key; tests must not make real AI requests.
     monkeypatch.setenv("GROQ_API_KEY", "test-only-key-not-used")
 
     import database
 
-    # Redirect database.py to a fresh, temporary SQLite database.
     monkeypatch.setattr(
         database,
         "DB_PATH",
         tmp_path / "test_stratify.db",
     )
 
-    # Import after patching the database path.
     import main
 
     with TestClient(main.app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def signup_account(client):
+    def create_account(username, password="TestPassword123!", name="Test User"):
+        response = client.post(
+            "/auth/signup",
+            json={
+                "username": username,
+                "password": password,
+                "name": name,
+            },
+        )
+        assert response.status_code == 201, response.text
+        return response
+
+    return create_account

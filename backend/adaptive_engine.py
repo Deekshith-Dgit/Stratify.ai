@@ -261,6 +261,7 @@ def generate_next_question(profile: dict, answers: list) -> dict:
             raise ValueError("Each previous answer must be an object.")
 
         question_id = item.get("question_id")
+        question_text = item.get("question_text", "")
         answer = item.get("answer")
 
         if not isinstance(question_id, str) or not question_id.strip():
@@ -269,10 +270,17 @@ def generate_next_question(profile: dict, answers: list) -> dict:
         if not isinstance(answer, str):
             raise ValueError("A previous answer has an invalid answer value.")
 
-        question_id = question_id.strip()
+        if not isinstance(question_text, str):
+            raise ValueError("A previous question has an invalid text value.")
 
-        if len(question_id) > MAX_QUESTION_ID_LENGTH:
-            raise ValueError("A previous question ID is too long.")
+        question_id = question_id.strip()
+        question_text = question_text.strip()
+
+        if (
+            len(question_id) > MAX_QUESTION_ID_LENGTH
+            or len(question_text) > MAX_QUESTION_TEXT_LENGTH
+        ):
+            raise ValueError("A previous question field is too long.")
 
         if question_id in answered_ids:
             raise ValueError("Duplicate answered question IDs were supplied.")
@@ -281,6 +289,7 @@ def generate_next_question(profile: dict, answers: list) -> dict:
 
         clean_answers.append({
             "question_id": question_id,
+            "question_text": question_text,
             "answer": answer[:5000],
         })
 

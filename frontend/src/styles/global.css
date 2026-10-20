@@ -1,0 +1,61 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+
+@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda:opsz,wght@6..96,400;6..96,500&display=swap');
+
+:root {
+  font-family: var(--font-ui);
+  color: #f2f2f2;
+  background: #090909;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --font-brand: 'Cormorant Garamond', Georgia, serif;
+  --font-ui: 'DM Sans', sans-serif;
+
+  --bg: #090909;
+  --surface: #141414;
+  --text: #f2f2f2;
+  --muted: #969696;
+  --accent: #dedede;
+  --border: rgba(255, 255, 255, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid #d0d0d0;
+  outline-offset: 4px;
+}
+
+::selection {
+  color: #000;
+  background: #e5e5e5;
+}

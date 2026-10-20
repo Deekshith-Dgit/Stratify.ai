@@ -149,7 +149,10 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+*.env
 .envrc
+stratify.db
 .venv
 env/
 venv/

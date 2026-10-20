@@ -1,31 +1,32 @@
-
 import json
 import logging
 import math
 import sqlite3
 import uuid
-from pydantic import BaseModel, Field, field_validator
-from datetime import datetime, timezone, timedelta
-from typing import Literal
+
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from adaptive_engine import generate_next_question
 from database import get_connection
 from routers.auth import get_current_user
-from adaptive_engine import generate_next_question
 
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/onboarding", tags=["Onboarding"])
+router = APIRouter(
+    prefix="/onboarding",
+    tags=["Onboarding"],
+)
 
 GENERATION_TIMEOUT_SECONDS = 90
+MAX_ONBOARDING_QUESTIONS = 12
+MAX_QUESTION_OPTIONS = 12
+MAX_OPTION_TEXT_LENGTH = 200
 
-
-# --------------------------------------------------
-# 1. INITIAL QUESTION
-# --------------------------------------------------
 
 FIRST_QUESTION = {
     "status": "ask",
@@ -34,48 +35,58 @@ FIRST_QUESTION = {
         "text": "Which best describes you right now?",
         "type": "single_choice",
         "options": [
-            {"label": "Student", "value": "student"},
+            {
+                "label": "Student",
+                "value": "student",
+            },
             {
                 "label": "Working professional",
                 "value": "professional",
             },
-            {"label": "Other", "value": "other"},
+            {
+                "label": "Other",
+                "value": "other",
+            },
         ],
     },
-    "reason": "Your current situation helps personalize the assessment.",
+    "reason": (
+        "Your current situation helps personalize "
+        "the assessment."
+    ),
     "profile_updates": [],
     "unknowns": [],
 }
 
 
-# --------------------------------------------------
-# 2. REQUEST MODELS
-# --------------------------------------------------
-
-
 class AnswerInput(BaseModel):
     session_id: uuid.UUID
-    question_id: str = Field(min_length=1, max_length=100)
-    answer: str = Field(min_length=1, max_length=5000)
+    question_id: str = Field(
+        min_length=1,
+        max_length=100,
+    )
+    answer: str = Field(
+        min_length=1,
+        max_length=5000,
+    )
 
     @field_validator("question_id", "answer")
     @classmethod
     def reject_blank_strings(cls, value: str) -> str:
         value = value.strip()
+
         if not value:
-            raise ValueError("This field cannot be empty.")
+            raise ValueError(
+                "This field cannot be empty."
+            )
+
         return value
 
-# --------------------------------------------------
-# 3. DATABASE COMPATIBILITY / MIGRATION
-# --------------------------------------------------
 
-def ensure_onboarding_schema():
+def ensure_onboarding_schema() -> None:
     """
-    Add columns required by this onboarding implementation
-    without deleting existing users or onboarding data.
+    Apply additive database changes without deleting
+    existing user data.
     """
-
     with get_connection() as db:
         columns = {
             row["name"]
@@ -100,10 +111,23 @@ def ensure_onboarding_schema():
                 """
             )
 
-        # Add duplicate-answer protection to existing databases.
+        answer_columns = {
+            row["name"]
+            for row in db.execute(
+                "PRAGMA table_info(onboarding_answers)"
+            ).fetchall()
+        }
+        if "question_text" not in answer_columns:
+            db.execute(
+                """
+                ALTER TABLE onboarding_answers
+                ADD COLUMN question_text TEXT NOT NULL DEFAULT ''
+                """
+            )
+
         duplicates = db.execute(
             """
-            SELECT session_id, question_id, COUNT(*) AS total
+            SELECT 1
             FROM onboarding_answers
             GROUP BY session_id, question_id
             HAVING COUNT(*) > 1
@@ -113,8 +137,8 @@ def ensure_onboarding_schema():
 
         if duplicates:
             logger.warning(
-                "Existing duplicate onboarding answers detected. "
-                "Unique index was not created."
+                "Duplicate historical onboarding answers found; "
+                "skipping unique index."
             )
         else:
             db.execute(
@@ -126,18 +150,21 @@ def ensure_onboarding_schema():
             )
 
 
-# --------------------------------------------------
-# 4. HELPERS
-# --------------------------------------------------
-
-def parse_json(value, fallback):
+def parse_json(
+    value: Any,
+    fallback: Any,
+) -> Any:
     try:
         return json.loads(value) if value else fallback
     except (TypeError, json.JSONDecodeError):
         return fallback
 
 
-def get_owned_session(db, session_id, user_id):
+def get_owned_session(
+    db,
+    session_id: str,
+    user_id: str,
+):
     session = db.execute(
         """
         SELECT *
@@ -156,27 +183,40 @@ def get_owned_session(db, session_id, user_id):
     return session
 
 
-def get_profile(db, user_id):
+def get_profile(
+    db,
+    user_id: str,
+) -> dict:
     user = db.execute(
-        "SELECT profile_json FROM users WHERE id = ?",
+        """
+        SELECT profile_json
+        FROM users
+        WHERE id = ?
+        """,
         (user_id,),
     ).fetchone()
 
     if user is None:
-        raise HTTPException(status_code=404, detail="User not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="User not found.",
+        )
 
-    profile = parse_json(user["profile_json"], {})
+    profile = parse_json(
+        user["profile_json"],
+        {},
+    )
 
-    if not isinstance(profile, dict):
-        profile = {}
-
-    return profile
+    return profile if isinstance(profile, dict) else {}
 
 
-def get_session_answers(db, session_id):
+def get_session_answers(
+    db,
+    session_id: str,
+) -> list[dict]:
     rows = db.execute(
         """
-        SELECT question_id, answer
+        SELECT question_id, question_text, answer
         FROM onboarding_answers
         WHERE session_id = ?
         ORDER BY id ASC
@@ -187,38 +227,166 @@ def get_session_answers(db, session_id):
     return [
         {
             "question_id": row["question_id"],
+            "question_text": row["question_text"],
             "answer": row["answer"],
         }
         for row in rows
     ]
 
 
-def get_completed_response(db, session_id, user_id):
-    profile = get_profile(db, user_id)
-    answers = get_session_answers(db, session_id)
+def get_session_progress(
+    db,
+    session_id: str,
+    complete: bool = False,
+) -> dict:
+    answered = db.execute(
+        """
+        SELECT COUNT(*) AS answer_count
+        FROM onboarding_answers
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()["answer_count"]
 
     return {
-        "status": "complete",
-        "question": None,
-        "reason": "The adaptive assessment is complete.",
-        "profile": profile,
-        "answers": answers,
+        "completed_questions": answered,
+        "total_questions": MAX_ONBOARDING_QUESTIONS,
+        "completion_percent": (
+            100
+            if complete
+            else round(answered * 100 / MAX_ONBOARDING_QUESTIONS)
+        ),
     }
 
 
-def validate_answer(question, answer):
-    """Validate and normalize an answer against the stored pending question."""
+def get_completed_response(
+    db,
+    session_id: str,
+    user_id: str,
+) -> dict:
+    return {
+        "status": "complete",
+        "question": None,
+        "reason": (
+            "The adaptive assessment is complete."
+        ),
+        "profile": get_profile(db, user_id),
+        "answers": get_session_answers(
+            db,
+            session_id,
+        ),
+        "progress": get_session_progress(
+            db,
+            session_id,
+            complete=True,
+        ),
+    }
+
+
+def _valid_options(
+    question: dict,
+) -> list[dict]:
+    options = question.get("options")
+
+    if (
+        not isinstance(options, list)
+        or not 2 <= len(options) <= MAX_QUESTION_OPTIONS
+    ):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "This question's options are invalid. "
+                "Please retry the question."
+            ),
+        )
+
+    seen_labels: set[str] = set()
+    seen_values: set[str] = set()
+    cleaned = []
+
+    for option in options:
+        if not isinstance(option, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="This question's options are invalid.",
+            )
+
+        label = option.get("label")
+        value = option.get("value")
+
+        if (
+            not isinstance(label, str)
+            or not isinstance(value, str)
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="This question's options are invalid.",
+            )
+
+        label = label.strip()
+        value = value.strip()
+
+        if (
+            not label
+            or not value
+            or len(label) > MAX_OPTION_TEXT_LENGTH
+            or len(value) > MAX_OPTION_TEXT_LENGTH
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail="This question's options are invalid.",
+            )
+
+        label_key = label.casefold()
+        value_key = value.casefold()
+
+        if (
+            label_key in seen_labels
+            or value_key in seen_values
+        ):
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "This question contains duplicate options. "
+                    "Please retry the question."
+                ),
+            )
+
+        seen_labels.add(label_key)
+        seen_values.add(value_key)
+
+        cleaned.append(
+            {
+                "label": label,
+                "value": value,
+            }
+        )
+
+    return cleaned
+
+
+def validate_answer(
+    question: dict,
+    answer: str,
+) -> str:
+    """Validate an answer against the stored question."""
 
     if not isinstance(question, dict):
         raise HTTPException(
             status_code=500,
-            detail="The pending question is invalid. Please refresh and try again.",
+            detail=(
+                "The pending question is invalid. "
+                "Please refresh and try again."
+            ),
         )
 
     if not isinstance(answer, str):
         raise HTTPException(
             status_code=422,
-            detail="Please enter an answer in the expected format.",
+            detail=(
+                "Please enter an answer in the "
+                "expected format."
+            ),
         )
 
     answer = answer.strip()
@@ -226,7 +394,9 @@ def validate_answer(question, answer):
     if not answer:
         raise HTTPException(
             status_code=422,
-            detail="Please provide an answer before continuing.",
+            detail=(
+                "Please provide an answer before continuing."
+            ),
         )
 
     question_type = question.get("type")
@@ -235,42 +405,98 @@ def validate_answer(question, answer):
         if len(answer) > 5000:
             raise HTTPException(
                 status_code=422,
-                detail="Your answer must be 5,000 characters or fewer.",
+                detail=(
+                    "Your answer must be 5,000 "
+                    "characters or fewer."
+                ),
             )
+
         return answer
 
-    if question_type == "single_choice":
-        options = question.get("options")
-
-        if not isinstance(options, list) or not options:
-            logger.error("Pending single-choice question has invalid options.")
-            raise HTTPException(
-                status_code=500,
-                detail="This question is temporarily unavailable. Please try again.",
-            )
+    if question_type in {
+        "single_choice",
+        "multi_choice",
+    }:
+        options = _valid_options(question)
 
         valid_values = {
-            option["value"]
+            option["value"].casefold(): option["value"]
             for option in options
-            if isinstance(option, dict)
-            and isinstance(option.get("value"), str)
-            and option["value"].strip()
         }
 
-        if not valid_values:
-            logger.error("Pending question contains no valid choice values.")
-            raise HTTPException(
-                status_code=500,
-                detail="This question is temporarily unavailable. Please try again.",
-            )
+        if question_type == "single_choice":
+            chosen = answer
 
-        if answer not in valid_values:
+            if chosen.casefold() not in valid_values:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Please select one of the "
+                        "available options."
+                    ),
+                )
+
+            return valid_values[chosen.casefold()]
+
+        try:
+            selected = json.loads(answer)
+        except json.JSONDecodeError:
             raise HTTPException(
                 status_code=422,
-                detail="Please select one of the available options.",
+                detail=(
+                    "Select one or more options in list "
+                    'format, e.g. ["option_a", "option_b"].'
+                ),
             )
 
-        return answer
+        if not isinstance(selected, list) or not selected:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Please select at least one option."
+                ),
+            )
+
+        if any(
+            not isinstance(item, str) or not item.strip()
+            for item in selected
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="The selected options are invalid.",
+            )
+
+        normalized = []
+        seen = set()
+
+        for item in selected:
+            key = item.strip().casefold()
+
+            if key not in valid_values:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "One or more selected options "
+                        "are unavailable."
+                    ),
+                )
+
+            if key in seen:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "The same option cannot be "
+                        "selected more than once."
+                    ),
+                )
+
+            seen.add(key)
+            normalized.append(valid_values[key])
+
+        return json.dumps(
+            normalized,
+            ensure_ascii=False,
+        )
 
     if question_type == "number":
         try:
@@ -278,7 +504,10 @@ def validate_answer(question, answer):
         except (ValueError, OverflowError):
             raise HTTPException(
                 status_code=422,
-                detail="Please enter a valid number, such as 16 or 3.5.",
+                detail=(
+                    "Please enter a valid number, "
+                    "such as 16 or 3.5."
+                ),
             )
 
         if not math.isfinite(number):
@@ -287,59 +516,61 @@ def validate_answer(question, answer):
                 detail="Please enter a finite number.",
             )
 
-        # Respect optional limits if a future question defines them.
         minimum = question.get("min")
         maximum = question.get("max")
 
         if minimum is not None and number < minimum:
             raise HTTPException(
                 status_code=422,
-                detail=f"Please enter a number of at least {minimum}.",
+                detail=(
+                    f"Please enter a number of at least "
+                    f"{minimum}."
+                ),
             )
 
         if maximum is not None and number > maximum:
             raise HTTPException(
                 status_code=422,
-                detail=f"Please enter a number no greater than {maximum}.",
-            )
-
-        return answer
-
-    logger.error("Unsupported pending question type: %r", question_type)
-    raise HTTPException(
-        status_code=500,
-        detail="This question has an unsupported format. Please try again.",
-    )
-
-
-    if question_type == "number":
-        try:
-            number = float(answer)
-        except ValueError:
-            raise HTTPException(
-                status_code=422,
-                detail="Enter a valid number.",
-            )
-
-        if not math.isfinite(number):
-            raise HTTPException(
-                status_code=422,
-                detail="The number must be finite.",
+                detail=(
+                    f"Please enter a number no greater "
+                    f"than {maximum}."
+                ),
             )
 
         return answer
 
     raise HTTPException(
         status_code=500,
-        detail="Unsupported pending question type.",
+        detail=(
+            "This question uses an unsupported answer type."
+        ),
+    )
+    logger.error(
+        "Unsupported pending question type: %r",
+        question_type,
+    )
+
+    raise HTTPException(
+        status_code=500,
+        detail=(
+            "This question has an unsupported format. "
+            "Please try again."
+        ),
     )
 
 
-def validate_generated_result(result, answered_ids):
-    """Validate AI output again before saving or returning it."""
-
+def validate_generated_result(
+    result: Any,
+    answered_ids: set[str],
+) -> dict:
+    """
+    Validate and normalize adaptive-engine output
+    before saving it to the database.
+    """
     if not isinstance(result, dict):
-        raise ValueError("AI output must be a JSON object.")
+        raise ValueError(
+            "AI output must be a JSON object."
+        )
 
     status = result.get("status")
 
@@ -348,8 +579,19 @@ def validate_generated_result(result, answered_ids):
 
     reason = result.get("reason", "")
 
-    if not isinstance(reason, str) or len(reason) > 2000:
+    if (
+        not isinstance(reason, str)
+        or len(reason) > 2000
+    ):
         raise ValueError("Invalid AI reason.")
+
+    unknowns = result.get("unknowns", [])
+
+    if (
+        not isinstance(unknowns, list)
+        or len(unknowns) > 50
+    ):
+        raise ValueError("Invalid unknowns list.")
 
     if status == "complete":
         return {
@@ -357,13 +599,15 @@ def validate_generated_result(result, answered_ids):
             "question": None,
             "reason": reason,
             "profile_updates": [],
-            "unknowns": result.get("unknowns", []),
+            "unknowns": unknowns,
         }
 
     question = result.get("question")
 
     if not isinstance(question, dict):
-        raise ValueError("AI did not return a valid question.")
+        raise ValueError(
+            "AI did not return a valid question."
+        )
 
     question_id = question.get("id")
     question_text = question.get("text")
@@ -376,8 +620,12 @@ def validate_generated_result(result, answered_ids):
     ):
         raise ValueError("Invalid question ID.")
 
+    question_id = question_id.strip()
+
     if question_id in answered_ids:
-        raise ValueError("AI generated a question that was already answered.")
+        raise ValueError(
+            "AI generated a question that was already answered."
+        )
 
     if (
         not isinstance(question_text, str)
@@ -386,7 +634,12 @@ def validate_generated_result(result, answered_ids):
     ):
         raise ValueError("Invalid question text.")
 
-    if question_type not in {"text", "single_choice", "number"}:
+    if question_type not in {
+        "text",
+        "single_choice",
+        "multi_choice",
+        "number",
+    }:
         raise ValueError("Unsupported question type.")
 
     clean_question = {
@@ -395,14 +648,23 @@ def validate_generated_result(result, answered_ids):
         "type": question_type,
     }
 
-    if question_type == "single_choice":
+    if question_type in {
+        "single_choice",
+        "multi_choice",
+    }:
         options = question.get("options")
 
-        if not isinstance(options, list) or not 2 <= len(options) <= 12:
-            raise ValueError("Choice questions need 2–12 options.")
+        if (
+            not isinstance(options, list)
+            or not 2 <= len(options) <= MAX_QUESTION_OPTIONS
+        ):
+            raise ValueError(
+                "Choice questions need 2–12 options."
+            )
 
         clean_options = []
-        seen_values = set()
+        seen_labels: set[str] = set()
+        seen_values: set[str] = set()
 
         for option in options:
             if not isinstance(option, dict):
@@ -413,29 +675,80 @@ def validate_generated_result(result, answered_ids):
 
             if (
                 not isinstance(label, str)
-                or not label.strip()
-                or len(label) > 200
                 or not isinstance(value, str)
-                or not value.strip()
-                or len(value) > 200
             ):
-                raise ValueError("Invalid option label or value.")
+                raise ValueError(
+                    "Invalid option label or value."
+                )
 
-            if value in seen_values:
-                raise ValueError("Duplicate option values.")
+            label = label.strip()
+            value = value.strip()
 
-            seen_values.add(value)
-            clean_options.append({
-                "label": label.strip(),
-                "value": value,
-            })
+            if (
+                not label
+                or not value
+                or len(label) > MAX_OPTION_TEXT_LENGTH
+                or len(value) > MAX_OPTION_TEXT_LENGTH
+            ):
+                raise ValueError(
+                    "Invalid option label or value."
+                )
+
+            label_key = label.casefold()
+            value_key = value.casefold()
+
+            if label_key in seen_labels:
+                raise ValueError(
+                    "Duplicate option labels."
+                )
+
+            if value_key in seen_values:
+                raise ValueError(
+                    "Duplicate option values."
+                )
+
+            seen_labels.add(label_key)
+            seen_values.add(value_key)
+
+            clean_options.append(
+                {
+                    "label": label,
+                    "value": value,
+                }
+            )
 
         clean_question["options"] = clean_options
 
-    unknowns = result.get("unknowns", [])
+    if question_type == "number":
+        for bound in ("min", "max"):
+            if (
+                bound in question
+                and question[bound] is not None
+            ):
+                value = question[bound]
 
-    if not isinstance(unknowns, list) or len(unknowns) > 50:
-        raise ValueError("Invalid unknowns list.")
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError(
+                        f"Invalid numeric {bound} bound."
+                    )
+
+                clean_question[bound] = value
+
+        minimum = clean_question.get("min")
+        maximum = clean_question.get("max")
+
+        if (
+            minimum is not None
+            and maximum is not None
+            and minimum > maximum
+        ):
+            raise ValueError(
+                "Numeric question minimum exceeds maximum."
+            )
 
     return {
         "status": "ask",
@@ -446,18 +759,36 @@ def validate_generated_result(result, answered_ids):
     }
 
 
-# --------------------------------------------------
-# 5. START ONBOARDING
-# --------------------------------------------------
+def _mark_complete(
+    db,
+    session_id: str,
+    user_id: str,
+) -> dict:
+    db.execute(
+        """
+        UPDATE onboarding_sessions
+        SET status = 'completed',
+            current_question_json = NULL,
+            generation_started_at = NULL
+        WHERE id = ? AND user_id = ?
+        """,
+        (session_id, user_id),
+    )
+
+    return get_completed_response(
+        db,
+        session_id,
+        user_id,
+    )
+
 
 @router.post("/start")
-def start_onboarding(user=Depends(get_current_user)):
+def start_onboarding(
+    user=Depends(get_current_user),
+):
     ensure_onboarding_schema()
 
     session_id = str(uuid.uuid4())
-    user_id = user["id"]
-
-    initial_question = json.dumps(FIRST_QUESTION)
 
     with get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -476,22 +807,24 @@ def start_onboarding(user=Depends(get_current_user)):
             """,
             (
                 session_id,
-                user_id,
+                user["id"],
                 "in_progress",
                 datetime.now(timezone.utc).isoformat(),
-                initial_question,
+                json.dumps(
+                    FIRST_QUESTION,
+                    ensure_ascii=False,
+                ),
             ),
         )
+
+        progress = get_session_progress(db, session_id)
 
     return {
         "session_id": session_id,
         **FIRST_QUESTION,
+        "progress": progress,
     }
 
-
-# --------------------------------------------------
-# 6. SUBMIT AN ANSWER
-# --------------------------------------------------
 
 @router.post("/answer")
 def submit_answer(
@@ -504,17 +837,21 @@ def submit_answer(
     user_id = user["id"]
 
     with get_connection() as db:
-        # Serializes answer submissions for this SQLite database.
         db.execute("BEGIN IMMEDIATE")
 
-        session = get_owned_session(db, session_id, user_id)
+        session = get_owned_session(
+            db,
+            session_id,
+            user_id,
+        )
 
         if session["status"] != "in_progress":
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "This session is not accepting answers right now. "
-                    "Call GET /onboarding/next to check its state."
+                    "This session is not accepting answers "
+                    "right now. Call GET /onboarding/next "
+                    "to check its state."
                 ),
             )
 
@@ -523,19 +860,19 @@ def submit_answer(
             None,
         )
 
-        if not isinstance(pending, dict):
+        if (
+            not isinstance(pending, dict)
+            or not isinstance(pending.get("question"), dict)
+        ):
             raise HTTPException(
                 status_code=409,
-                detail="There is no pending question for this session.",
+                detail=(
+                    "There is no valid pending question "
+                    "for this session."
+                ),
             )
 
-        question = pending.get("question")
-
-        if not isinstance(question, dict):
-            raise HTTPException(
-                status_code=500,
-                detail="The pending question is invalid.",
-            )
+        question = pending["question"]
 
         if data.question_id != question.get("id"):
             raise HTTPException(
@@ -543,7 +880,10 @@ def submit_answer(
                 detail="This is not the current question.",
             )
 
-        clean_answer = validate_answer(question, data.answer)
+        clean_answer = validate_answer(
+            question,
+            data.answer,
+        )
 
         try:
             db.execute(
@@ -551,14 +891,16 @@ def submit_answer(
                 INSERT INTO onboarding_answers (
                     session_id,
                     question_id,
+                    question_text,
                     answer,
                     created_at
                 )
-                VALUES (?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
                     data.question_id,
+                    question["text"],
                     clean_answer,
                     datetime.now(timezone.utc).isoformat(),
                 ),
@@ -566,11 +908,12 @@ def submit_answer(
         except sqlite3.IntegrityError:
             raise HTTPException(
                 status_code=409,
-                detail="An answer for this question already exists.",
+                detail=(
+                    "An answer for this question "
+                    "already exists."
+                ),
             )
 
-        # Save the role to the base profile, but keep all answers
-        # in the answers table as the authoritative record.
         if data.question_id == "role":
             profile = get_profile(db, user_id)
             profile["role"] = clean_answer
@@ -582,7 +925,10 @@ def submit_answer(
                 WHERE id = ?
                 """,
                 (
-                    json.dumps(profile, ensure_ascii=False),
+                    json.dumps(
+                        profile,
+                        ensure_ascii=False,
+                    ),
                     user_id,
                 ),
             )
@@ -598,32 +944,49 @@ def submit_answer(
             (session_id, user_id),
         )
 
-    # The answer is committed before the external AI call.
-    result = generate_and_store_next(session_id, user_id)
+    # The answer is saved before calling the AI engine.
+    # If generation fails, GET /next can retry it.
+    result = generate_and_store_next(
+        session_id,
+        user_id,
+    )
+
+    with get_connection() as db:
+        progress = get_session_progress(
+            db,
+            session_id,
+            complete=result.get("status") == "complete",
+        )
 
     return {
         "session_id": session_id,
         "answer_saved": True,
         **result,
+        "progress": progress,
     }
 
 
-# --------------------------------------------------
-# 7. GENERATE AND STORE THE NEXT QUESTION
-# --------------------------------------------------
-
-def generate_and_store_next(session_id, user_id):
+def generate_and_store_next(
+    session_id: str,
+    user_id: str,
+) -> dict:
     now = datetime.now(timezone.utc)
 
-    # Atomically claim this session so two requests don't normally
-    # generate and save separate questions at the same time.
     with get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
 
-        session = get_owned_session(db, session_id, user_id)
+        session = get_owned_session(
+            db,
+            session_id,
+            user_id,
+        )
 
         if session["status"] == "completed":
-            return get_completed_response(db, session_id, user_id)
+            return get_completed_response(
+                db,
+                session_id,
+                user_id,
+            )
 
         if session["status"] == "in_progress":
             current = parse_json(
@@ -632,20 +995,46 @@ def generate_and_store_next(session_id, user_id):
             )
 
             if isinstance(current, dict):
-                return current
+                return {
+                    **current,
+                    "progress": get_session_progress(
+                        db,
+                        session_id,
+                    ),
+                }
 
             raise HTTPException(
                 status_code=409,
                 detail="No current question is available.",
             )
 
+        answers = get_session_answers(
+            db,
+            session_id,
+        )
+
+        # Hard limit: do not generate more questions
+        # after the configured number of answers.
+        if len(answers) >= MAX_ONBOARDING_QUESTIONS:
+            return _mark_complete(
+                db,
+                session_id,
+                user_id,
+            )
+
         if session["status"] == "generating":
             started_at = session["generation_started_at"]
 
             try:
-                started = datetime.fromisoformat(started_at)
+                started = datetime.fromisoformat(
+                    started_at
+                )
+
                 if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
+                    started = started.replace(
+                        tzinfo=timezone.utc
+                    )
+
             except (TypeError, ValueError):
                 started = now - timedelta(
                     seconds=GENERATION_TIMEOUT_SECONDS + 1
@@ -656,10 +1045,12 @@ def generate_and_store_next(session_id, user_id):
             ).total_seconds() <= GENERATION_TIMEOUT_SECONDS:
                 raise HTTPException(
                     status_code=409,
-                    detail="A question is already being generated. Try again shortly.",
+                    detail=(
+                        "A question is already being generated. "
+                        "Try again shortly."
+                    ),
                 )
 
-            # Recover a generation lock left behind by a crashed request.
             db.execute(
                 """
                 UPDATE onboarding_sessions
@@ -673,7 +1064,10 @@ def generate_and_store_next(session_id, user_id):
         elif session["status"] != "awaiting_adaptive_engine":
             raise HTTPException(
                 status_code=409,
-                detail="This session cannot generate a question in its current state.",
+                detail=(
+                    "This session cannot generate a question "
+                    "in its current state."
+                ),
             )
 
         claimed = db.execute(
@@ -685,31 +1079,39 @@ def generate_and_store_next(session_id, user_id):
               AND user_id = ?
               AND status = 'awaiting_adaptive_engine'
             """,
-            (now.isoformat(), session_id, user_id),
+            (
+                now.isoformat(),
+                session_id,
+                user_id,
+            ),
         )
 
         if claimed.rowcount != 1:
             raise HTTPException(
                 status_code=409,
-                detail="Could not claim this session for question generation.",
+                detail=(
+                    "Could not claim this session "
+                    "for question generation."
+                ),
             )
 
         profile = get_profile(db, user_id)
-        answers = get_session_answers(db, session_id)
 
-    # The slow external API call happens outside the DB transaction.
     try:
-        result = generate_next_question(profile, answers)
+        raw_result = generate_next_question(
+            profile,
+            answers,
+        )
 
-        answered_ids = {
-            item["question_id"]
-            for item in answers
-        }
-
-        result = validate_generated_result(result, answered_ids)
+        result = validate_generated_result(
+            raw_result,
+            {
+                item["question_id"]
+                for item in answers
+            },
+        )
 
     except Exception as exc:
-        # Allow a later /next request to retry after a model/API failure.
         with get_connection() as db:
             db.execute(
                 """
@@ -724,7 +1126,8 @@ def generate_and_store_next(session_id, user_id):
             )
 
         logger.warning(
-            "Adaptive question generation failed for session %s (%s).",
+            "Adaptive question generation failed for "
+            "session %s (%s).",
             session_id,
             type(exc).__name__,
         )
@@ -732,36 +1135,44 @@ def generate_and_store_next(session_id, user_id):
         raise HTTPException(
             status_code=502,
             detail=(
-                "The adaptive engine could not generate the next question. "
-                "Your answer was saved; call GET /onboarding/next to retry."
+                "The adaptive engine could not generate "
+                "the next question. Your answer was saved; "
+                "call GET /onboarding/next to retry."
             ),
         )
 
-    # Store the generated question or mark the session complete.
     with get_connection() as db:
         db.execute("BEGIN IMMEDIATE")
 
-        session = get_owned_session(db, session_id, user_id)
+        session = get_owned_session(
+            db,
+            session_id,
+            user_id,
+        )
 
-        # Another request may have recovered a stale generation lock.
-        # Do not overwrite a newer state with an old result.
         if session["status"] != "generating":
             if session["status"] == "in_progress":
                 current = parse_json(
                     session["current_question_json"],
                     None,
                 )
+
                 if isinstance(current, dict):
                     return current
 
             if session["status"] == "completed":
                 return get_completed_response(
-                    db, session_id, user_id
+                    db,
+                    session_id,
+                    user_id,
                 )
 
             raise HTTPException(
                 status_code=409,
-                detail="The session state changed during generation. Call /next.",
+                detail=(
+                    "The session state changed during "
+                    "generation. Call /next."
+                ),
             )
 
         if result["status"] == "complete":
@@ -776,7 +1187,11 @@ def generate_and_store_next(session_id, user_id):
                 (session_id, user_id),
             )
 
-            return get_completed_response(db, session_id, user_id)
+            return get_completed_response(
+                db,
+                session_id,
+                user_id,
+            )
 
         db.execute(
             """
@@ -787,7 +1202,10 @@ def generate_and_store_next(session_id, user_id):
             WHERE id = ? AND user_id = ?
             """,
             (
-                json.dumps(result, ensure_ascii=False),
+                json.dumps(
+                    result,
+                    ensure_ascii=False,
+                ),
                 session_id,
                 user_id,
             ),
@@ -795,10 +1213,6 @@ def generate_and_store_next(session_id, user_id):
 
     return result
 
-
-# --------------------------------------------------
-# 8. GET CURRENT QUESTION OR RETRY GENERATION
-# --------------------------------------------------
 
 @router.get("/next")
 def get_next_question(
@@ -811,7 +1225,11 @@ def get_next_question(
     user_id = user["id"]
 
     with get_connection() as db:
-        session = get_owned_session(db, session_id, user_id)
+        session = get_owned_session(
+            db,
+            session_id,
+            user_id,
+        )
 
         if session["status"] == "in_progress":
             current = parse_json(
@@ -829,43 +1247,73 @@ def get_next_question(
 
         if session["status"] == "completed":
             return get_completed_response(
-                db, session_id, user_id
+                db,
+                session_id,
+                user_id,
             )
 
         if session["status"] == "generating":
             started_at = session["generation_started_at"]
 
             try:
-                started = datetime.fromisoformat(started_at)
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-            except (TypeError, ValueError):
-                started = datetime.min.replace(tzinfo=timezone.utc)
-
-            if (
-                datetime.now(timezone.utc) - started
-            ).total_seconds() <= GENERATION_TIMEOUT_SECONDS:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Question generation is still in progress. Try again shortly.",
+                started = datetime.fromisoformat(
+                    started_at
                 )
 
-    # This also recovers a stale generation lock and retries the model.
-    return generate_and_store_next(session_id, user_id)
+                if started.tzinfo is None:
+                    started = started.replace(
+                        tzinfo=timezone.utc
+                    )
 
+            except (TypeError, ValueError):
+                started = datetime.min.replace(
+                    tzinfo=timezone.utc
+                )
 
-# --------------------------------------------------
-# 9. VIEW PROFILE AND ANSWERS
-# --------------------------------------------------
+            elapsed = (
+                datetime.now(timezone.utc) - started
+            ).total_seconds()
+
+            if elapsed <= GENERATION_TIMEOUT_SECONDS:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Question generation is still "
+                        "in progress. Try again shortly."
+                    ),
+                )
+
+    # Recover interrupted generation using the same session.
+    result = generate_and_store_next(
+        session_id,
+        user_id,
+    )
+    with get_connection() as db:
+        progress = get_session_progress(
+            db,
+            session_id,
+            complete=result.get("status") == "complete",
+        )
+
+    return {
+        **result,
+        "progress": progress,
+    }
+
 
 @router.get("/profile")
-def get_onboarding_profile(user=Depends(get_current_user)):
+def get_onboarding_profile(
+    user=Depends(get_current_user),
+):
     ensure_onboarding_schema()
 
     user_id = user["id"]
 
     with get_connection() as db:
-        profile = get_profile(db, user_id)
+        profile = get_profile(
+            db,
+            user_id,
+        )
 
         sessions = db.execute(
             """
