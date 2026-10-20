@@ -1,6 +1,23 @@
 import sqlite3
 
 
+def test_database_uses_configured_path_from_environment(tmp_path, monkeypatch):
+    import importlib
+
+    import database
+
+    original_path = database.DB_PATH
+    configured_path = tmp_path / "persistent" / "stratify.db"
+    monkeypatch.setattr(database, "DB_PATH", original_path)
+    monkeypatch.setenv("DB_PATH", str(configured_path))
+
+    reloaded_database = importlib.reload(database)
+    assert reloaded_database.DB_PATH == configured_path
+
+    reloaded_database.init_db()
+    assert configured_path.is_file()
+
+
 def test_legacy_users_receive_unique_stratify_usernames(tmp_path, monkeypatch):
     database_path = tmp_path / "legacy.db"
     connection = sqlite3.connect(database_path)

@@ -3,12 +3,19 @@ import Welcome from "./pages/welcome";
 import "./App.css";
 
 const API_URL = (
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV ? "http://127.0.0.1:8000" : "")
 ).replace(/\/+$/, "");
 
 const TOKEN_KEY = "stratify_access_token";
 
 async function apiRequest(path, { token, ...options } = {}) {
+  if (!API_URL) {
+    throw new Error(
+      "The backend URL is not configured. Set VITE_API_URL in the frontend deployment settings."
+    );
+  }
+
   const response = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {

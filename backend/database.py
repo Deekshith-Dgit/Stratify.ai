@@ -1,10 +1,16 @@
 
-import sqlite3
+import os
 import re
+import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent / "stratify.db"
+DB_PATH = Path(
+    os.getenv(
+        "DB_PATH",
+        str(Path(__file__).resolve().parent / "stratify.db"),
+    )
+)
 BUSY_TIMEOUT_MS = 5_000
 USERNAME_MIGRATION_PATTERN = re.compile(
     r"^[a-z0-9](?:[a-z0-9._-]{1,22}[a-z0-9])$"

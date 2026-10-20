@@ -16,7 +16,7 @@ api_key = os.getenv("GROQ_API_KEY")
 
 if not api_key:
     raise RuntimeError(
-        "GROQ_API_KEY is missing. Add it to backend/.env."
+        "GROQ_API_KEY is missing. Set it in the backend environment."
     )
 
 client = Groq(

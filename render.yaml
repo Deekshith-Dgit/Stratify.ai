@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: stratify-api
+    runtime: python
+    plan: starter
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    disk:
+      name: stratify-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: DB_PATH
+        value: /var/data/stratify.db
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TOKENHARBOR_API_KEY
+        sync: false
+      - key: TOKENHARBOR_BASE_URL
+        value: https://tokenharbor.ai/v1
+      - key: TOKENHARBOR_MODEL
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: NVIDIA_MODEL
+        sync: false
