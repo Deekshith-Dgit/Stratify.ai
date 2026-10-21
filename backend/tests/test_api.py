@@ -236,6 +236,236 @@ def test_onboarding_accepts_valid_role_answer(
     }
 
 
+def test_onboarding_supports_multiple_choice_answers(client, monkeypatch, signup_account):
+    import routers.onboarding as onboarding
+
+    generated = iter([
+        {
+            "status": "ask",
+            "question": {
+                "id": "learning_preferences",
+                "text": "Which learning formats work for you?",
+                "type": "multi_choice",
+                "options": [
+                    {"label": "Projects", "value": "projects"},
+                    {"label": "Reading", "value": "reading"},
+                    {"label": "Discussion", "value": "discussion"},
+                ],
+            },
+            "reason": "Identify useful learning formats.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+        {
+            "status": "complete",
+            "question": None,
+            "reason": "Enough context has been gathered.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+    ])
+    monkeypatch.setattr(
+        onboarding,
+        "generate_next_question",
+        lambda _profile, _answers: next(generated),
+    )
+
+    token = signup_account("onboarding.multi.choice").json()["access_token"]
+    headers = {"Authorization": " ".join(("Bearer", token))}
+    start = client.post("/onboarding/start", headers=headers)
+    role_answer = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": start.json()["session_id"],
+            "question_id": "role",
+            "answer": "student",
+        },
+    )
+    assert role_answer.status_code == 200, role_answer.text
+    assert role_answer.json()["question"]["type"] == "multi_choice"
+
+    submitted = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": start.json()["session_id"],
+            "question_id": "learning_preferences",
+            "answer": '["projects","discussion"]',
+        },
+    )
+
+    assert submitted.status_code == 200, submitted.text
+    assert submitted.json()["status"] == "complete"
+    assert submitted.json()["answers"][-1]["answer"] == (
+        '["projects", "discussion"]'
+    )
+
+
+def test_onboarding_can_go_back_and_edit_answer(
+    client,
+    monkeypatch,
+    signup_account,
+):
+    import routers.onboarding as onboarding
+
+    generated = iter([
+        {
+            "status": "ask",
+            "question": {
+                "id": "study_subject",
+                "text": "What subject are you studying?",
+                "type": "text",
+            },
+            "reason": "Understand the current situation.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+        {
+            "status": "ask",
+            "question": {
+                "id": "study_goal",
+                "text": "What do you want to achieve?",
+                "type": "text",
+            },
+            "reason": "Understand the user's goal.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+        {
+            "status": "ask",
+            "question": {
+                "id": "study_timeline",
+                "text": "When do you want to achieve it?",
+                "type": "text",
+            },
+            "reason": "Understand the user's timeline.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+        {
+            "status": "ask",
+            "question": {
+                "id": "career_path",
+                "text": "What career path interests you?",
+                "type": "text",
+            },
+            "reason": "Understand the user's interests.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+        {
+            "status": "ask",
+            "question": {
+                "id": "study_timeline",
+                "text": "When do you want to achieve it?",
+                "type": "text",
+            },
+            "reason": "Reassess the timeline after the goal changed.",
+            "profile_updates": [],
+            "unknowns": [],
+        },
+    ])
+    monkeypatch.setattr(
+        onboarding,
+        "generate_next_question",
+        lambda _profile, _answers: next(generated),
+    )
+
+    token = signup_account("onboarding.edit.answer").json()["access_token"]
+    headers = {"Authorization": " ".join(("Bearer", token))}
+    start = client.post("/onboarding/start", headers=headers)
+    session_id = start.json()["session_id"]
+
+    role_answer = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "question_id": "role",
+            "answer": "student",
+        },
+    )
+    assert role_answer.status_code == 200, role_answer.text
+    subject_answer = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "question_id": "study_subject",
+            "answer": "Biology",
+        },
+    )
+    assert subject_answer.status_code == 200, subject_answer.text
+    goal_answer = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "question_id": "study_goal",
+            "answer": "Become a doctor",
+        },
+    )
+    assert goal_answer.status_code == 200, goal_answer.text
+
+    timeline_answer = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "question_id": "study_timeline",
+            "answer": "In three years",
+        },
+    )
+    assert timeline_answer.status_code == 200, timeline_answer.text
+
+    previous = client.get(
+        "/onboarding/previous",
+        params={
+            "session_id": session_id,
+            "question_id": "career_path",
+        },
+        headers=headers,
+    )
+    assert previous.status_code == 200, previous.text
+    assert previous.json()["question"]["id"] == "study_timeline"
+
+    previous = client.get(
+        "/onboarding/previous",
+        params={
+            "session_id": session_id,
+            "question_id": "study_timeline",
+        },
+        headers=headers,
+    )
+    assert previous.status_code == 200, previous.text
+    assert previous.json()["question"]["id"] == "study_goal"
+    assert previous.json()["answer"] == "Become a doctor"
+    assert previous.json()["can_go_back"] is True
+
+    edited = client.post(
+        "/onboarding/answer",
+        headers=headers,
+        json={
+            "session_id": session_id,
+            "question_id": "study_goal",
+            "answer": "Become a researcher",
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["question"]["id"] == "study_timeline"
+    assert edited.json()["progress"]["completed_questions"] == 3
+
+    with onboarding.get_connection() as db:
+        saved_answers = onboarding.get_session_answers(db, session_id)
+    assert [item["question_id"] for item in saved_answers] == [
+        "role",
+        "study_subject",
+        "study_goal",
+    ]
+    assert saved_answers[-1]["answer"] == "Become a researcher"
+
+
 def test_chat_receives_saved_onboarding_question_and_answer(
     client,
     monkeypatch,

@@ -108,6 +108,7 @@ def init_db():
                 session_id TEXT NOT NULL,
                 question_id TEXT NOT NULL,
                 question_text TEXT NOT NULL DEFAULT '',
+                question_json TEXT,
                 answer TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (session_id)
@@ -198,6 +199,12 @@ def init_db():
             "onboarding_answers",
             "question_text",
             "TEXT NOT NULL DEFAULT ''",
+        )
+        _ensure_column(
+            db,
+            "onboarding_answers",
+            "question_json",
+            "TEXT",
         )
         _ensure_column(
             db,

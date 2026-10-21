@@ -449,6 +449,12 @@
   line-height: 1.25;
 }
 
+.choice-instruction {
+  margin: -5px 0 12px;
+  color: #a5a49f;
+  font-size: 12px;
+}
+
 .choice-list {
   display: grid;
   gap: 10px;
@@ -481,6 +487,26 @@
 .choice-button.selected {
   border-color: #b79a68;
   background: #191812;
+}
+
+.onboarding-back {
+  justify-self: start;
+  padding: 7px 0;
+  border: 0;
+  background: transparent;
+  color: #a9b8b5;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.onboarding-back:hover:not(:disabled) {
+  color: #d6e3e0;
+}
+
+.onboarding-back:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 @keyframes choice-enter {

@@ -9,6 +9,15 @@ const API_URL = (
 
 const TOKEN_KEY = "stratify_access_token";
 
+function selectedOptions(answerValue) {
+  try {
+    const value = JSON.parse(answerValue || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
 async function apiRequest(path, { token, ...options } = {}) {
   if (!API_URL) {
     throw new Error(
@@ -359,6 +368,8 @@ export default function App() {
   const [sessionId, setSessionId] = useState("");
   const [question, setQuestion] = useState(null);
   const [answer, setAnswer] = useState("");
+  const [editingAnswer, setEditingAnswer] = useState(false);
+  const [canGoBack, setCanGoBack] = useState(false);
   const [progress, setProgress] = useState({
     completed_questions: 0,
     total_questions: 12,
@@ -401,6 +412,7 @@ export default function App() {
       Number.isFinite(nextProgress.completion_percent)
     ) {
       setProgress(nextProgress);
+      setCanGoBack(nextProgress.completed_questions > 0);
     }
   }
 
@@ -432,6 +444,8 @@ export default function App() {
       setSessionId(result.session_id);
       setQuestion(result.question);
       setAnswer("");
+      setEditingAnswer(false);
+      setCanGoBack(false);
       syncProgress(result);
       setScreen("onboarding");
     } catch (err) {
@@ -470,6 +484,8 @@ export default function App() {
         } else {
           setQuestion(next.question);
           setAnswer("");
+          setEditingAnswer(false);
+          setCanGoBack(next.progress?.completed_questions > 0);
           syncProgress(next);
           setScreen("onboarding");
         }
@@ -534,7 +550,10 @@ export default function App() {
   async function submitAnswer(event) {
     event.preventDefault();
 
-    if (!question || !answer.trim()) {
+    const hasAnswer = question?.type === "multi_choice"
+      ? selectedOptions(answer).length > 0
+      : Boolean(answer.trim());
+    if (!question || !hasAnswer) {
       return;
     }
 
@@ -566,6 +585,7 @@ export default function App() {
         );
       }
 
+      setEditingAnswer(false);
       if (result.status === "complete") {
         syncProgress(result);
         await loadHome(token);
@@ -597,6 +617,36 @@ export default function App() {
     }
   }
 
+  async function goToPreviousQuestion() {
+    if (!question || busy) {
+      return;
+    }
+    setBusy(true);
+    resetMessages();
+    try {
+      const previous = await apiRequest(
+        `/onboarding/previous?session_id=${encodeURIComponent(sessionId)}&question_id=${encodeURIComponent(question.id)}`,
+        { token }
+      );
+      setQuestion(previous.question);
+      setAnswer(previous.answer);
+      setEditingAnswer(true);
+      setCanGoBack(previous.can_go_back);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleMultiChoice(value) {
+    const current = selectedOptions(answer);
+    const updated = current.includes(value)
+      ? current.filter((item) => item !== value)
+      : [...current, value];
+    setAnswer(JSON.stringify(updated));
+  }
+
   async function handleWelcomeEnter() {
     resetMessages();
 
@@ -613,6 +663,9 @@ export default function App() {
     setToken("");
     setSessionId("");
     setQuestion(null);
+    setAnswer("");
+    setEditingAnswer(false);
+    setCanGoBack(false);
     setProgress({
       completed_questions: 0,
       total_questions: 12,
@@ -1055,30 +1108,58 @@ export default function App() {
               onSubmit={submitAnswer}
             >
               <p className="question-count">
-                QUESTION {Math.min(
-                  progress.completed_questions + 1,
-                  progress.total_questions
-                )}{" "}
-                · UP TO {progress.total_questions}
+                {editingAnswer
+                  ? "EDITING A PREVIOUS ANSWER"
+                  : `QUESTION ${Math.min(
+                      progress.completed_questions + 1,
+                      progress.total_questions
+                    )} · UP TO ${progress.total_questions}`}
               </p>
 
               <h2 className="question-title">{question.text}</h2>
 
-              {question.type === "single_choice" ? (
+              {question.type === "multi_choice" && (
+                <p className="choice-instruction">Select all that apply.</p>
+              )}
+
+              {["single_choice", "multi_choice"].includes(question.type) ? (
                 <div className="choice-list">
                   {(question.options || []).map((option, index) => (
                     <button
+                      aria-pressed={
+                        question.type === "multi_choice"
+                          ? selectedOptions(answer).includes(option.value)
+                          : answer === option.value
+                      }
                       className={`choice-button ${
-                        answer === option.value ? "selected" : ""
+                        (
+                          question.type === "multi_choice"
+                            ? selectedOptions(answer).includes(option.value)
+                            : answer === option.value
+                        )
+                          ? "selected"
+                          : ""
                       }`}
                       type="button"
                       key={option.value}
                       style={{ animationDelay: `${90 + index * 65}ms` }}
-                      onClick={() => setAnswer(option.value)}
+                      onClick={() => (
+                        question.type === "multi_choice"
+                          ? toggleMultiChoice(option.value)
+                          : setAnswer(option.value)
+                      )}
                     >
                       <span>{option.label}</span>
                       <span aria-hidden="true">
-                        {answer === option.value ? "✓" : "↗"}
+                        {(
+                          question.type === "multi_choice"
+                            ? selectedOptions(answer).includes(option.value)
+                            : answer === option.value
+                        )
+                          ? "✓"
+                          : question.type === "multi_choice"
+                            ? "○"
+                            : "↗"}
                       </span>
                     </button>
                   ))}
@@ -1096,6 +1177,17 @@ export default function App() {
                 />
               )}
 
+              {canGoBack && (
+                <button
+                  className="onboarding-back"
+                  type="button"
+                  onClick={goToPreviousQuestion}
+                  disabled={busy}
+                >
+                  ← Back to previous question
+                </button>
+              )}
+
               {error && (
                 <p className="app-error" role="alert">
                   {error}
@@ -1105,9 +1197,22 @@ export default function App() {
               <button
                 className="primary-button"
                 type="submit"
-                disabled={busy || !answer.trim()}
+                disabled={
+                  busy ||
+                  (
+                    question.type === "multi_choice"
+                      ? selectedOptions(answer).length === 0
+                      : !answer.trim()
+                  )
+                }
               >
-                {busy ? "Thinking..." : "Continue ↗"}
+                {busy
+                  ? "Thinking..."
+                  : question.type === "multi_choice"
+                    ? "Confirm selection ✓"
+                    : editingAnswer
+                      ? "Save changes ✓"
+                      : "Continue ✓"}
               </button>
             </form>
           ) : (

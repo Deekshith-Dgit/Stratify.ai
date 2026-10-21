@@ -60,10 +60,12 @@ DECISION PROCESS
 QUESTION TYPES
 - text: a short free-text response
 - single_choice: 2–12 distinct options
+- multi_choice: 2–12 options when several answers may apply
 - number: a numeric response
 
-For single_choice, each option must have a short label and a unique
-string value. Use an ID that is unique within this assessment.
+For single_choice and multi_choice, each option must have a short label and
+a unique string value. Use multi_choice only when more than one answer can
+reasonably apply. Use an ID that is unique within this assessment.
 
 OUTPUT
 Return only one valid JSON object.
@@ -191,7 +193,12 @@ def validate_result(result: dict, answered_ids: set) -> dict:
     if question_id in answered_ids:
         raise ValueError("AI repeated an already answered question.")
 
-    if question_type not in {"text", "single_choice", "number"}:
+    if question_type not in {
+        "text",
+        "single_choice",
+        "multi_choice",
+        "number",
+    }:
         raise ValueError("AI returned an unsupported question type.")
 
     clean_question = {
@@ -200,7 +207,7 @@ def validate_result(result: dict, answered_ids: set) -> dict:
         "type": question_type,
     }
 
-    if question_type == "single_choice":
+    if question_type in {"single_choice", "multi_choice"}:
         options = question.get("options")
 
         if not isinstance(options, list) or not 2 <= len(options) <= 12:

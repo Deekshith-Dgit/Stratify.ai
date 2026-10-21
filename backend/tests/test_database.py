@@ -152,7 +152,7 @@ def test_legacy_onboarding_answers_receive_question_text_column(
     with database.get_connection() as db:
         answer = db.execute(
             """
-            SELECT question_id, question_text, answer
+            SELECT question_id, question_text, question_json, answer
             FROM onboarding_answers
             WHERE session_id = 'legacy-session'
             """
@@ -160,4 +160,5 @@ def test_legacy_onboarding_answers_receive_question_text_column(
 
     assert answer["question_id"] == "role"
     assert answer["question_text"] == ""
+    assert answer["question_json"] is None
     assert answer["answer"] == "student"

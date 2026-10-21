@@ -124,6 +124,13 @@ def ensure_onboarding_schema() -> None:
                 ADD COLUMN question_text TEXT NOT NULL DEFAULT ''
                 """
             )
+        if "question_json" not in answer_columns:
+            db.execute(
+                """
+                ALTER TABLE onboarding_answers
+                ADD COLUMN question_json TEXT
+                """
+            )
 
         duplicates = db.execute(
             """
@@ -872,12 +879,29 @@ def submit_answer(
                 ),
             )
 
-        question = pending["question"]
+        pending_question = pending["question"]
+        existing_answer = db.execute(
+            """
+            SELECT id, question_json
+            FROM onboarding_answers
+            WHERE session_id = ? AND question_id = ?
+            """,
+            (session_id, data.question_id),
+        ).fetchone()
 
-        if data.question_id != question.get("id"):
+        if data.question_id == pending_question.get("id"):
+            question = pending_question
+        elif existing_answer is not None and existing_answer["question_json"]:
+            question = parse_json(existing_answer["question_json"], None)
+            if not isinstance(question, dict):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This earlier question cannot be edited.",
+                )
+        else:
             raise HTTPException(
                 status_code=409,
-                detail="This is not the current question.",
+                detail="This is not a question in the current assessment.",
             )
 
         clean_answer = validate_answer(
@@ -885,34 +909,61 @@ def submit_answer(
             data.answer,
         )
 
-        try:
+        if existing_answer is not None:
             db.execute(
                 """
-                INSERT INTO onboarding_answers (
-                    session_id,
-                    question_id,
-                    question_text,
-                    answer,
-                    created_at
-                )
-                VALUES (?, ?, ?, ?, ?)
+                DELETE FROM onboarding_answers
+                WHERE session_id = ? AND id > ?
+                """,
+                (session_id, existing_answer["id"]),
+            )
+            db.execute(
+                """
+                UPDATE onboarding_answers
+                SET question_text = ?, question_json = ?, answer = ?,
+                    created_at = ?
+                WHERE id = ? AND session_id = ?
                 """,
                 (
-                    session_id,
-                    data.question_id,
                     question["text"],
+                    json.dumps(question, ensure_ascii=False),
                     clean_answer,
                     datetime.now(timezone.utc).isoformat(),
+                    existing_answer["id"],
+                    session_id,
                 ),
             )
-        except sqlite3.IntegrityError:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "An answer for this question "
-                    "already exists."
-                ),
-            )
+        else:
+            try:
+                db.execute(
+                    """
+                    INSERT INTO onboarding_answers (
+                        session_id,
+                        question_id,
+                        question_text,
+                        question_json,
+                        answer,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        data.question_id,
+                        question["text"],
+                        json.dumps(question, ensure_ascii=False),
+                        clean_answer,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "An answer for this question "
+                        "already exists."
+                    ),
+                )
 
         if data.question_id == "role":
             profile = get_profile(db, user_id)
@@ -964,6 +1015,66 @@ def submit_answer(
         **result,
         "progress": progress,
     }
+
+
+@router.get("/previous")
+def get_previous_question(
+    session_id: uuid.UUID = Query(...),
+    question_id: str = Query(..., min_length=1, max_length=100),
+    user=Depends(get_current_user),
+):
+    ensure_onboarding_schema()
+    session_id = str(session_id)
+
+    with get_connection() as db:
+        session = get_owned_session(db, session_id, user["id"])
+        if session["status"] != "in_progress":
+            raise HTTPException(
+                status_code=409,
+                detail="This assessment is not ready for question navigation.",
+            )
+
+        rows = db.execute(
+            """
+            SELECT question_id, question_json, answer
+            FROM onboarding_answers
+            WHERE session_id = ?
+            ORDER BY id
+            """,
+            (session_id,),
+        ).fetchall()
+
+        current_index = next(
+            (
+                index
+                for index, row in enumerate(rows)
+                if row["question_id"] == question_id
+            ),
+            len(rows),
+        )
+        previous_index = current_index - 1
+        if previous_index < 0:
+            raise HTTPException(
+                status_code=404,
+                detail="There is no previous question.",
+            )
+
+        previous = rows[previous_index]
+        question = parse_json(previous["question_json"], None)
+        if not isinstance(question, dict):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This earlier question cannot be restored. "
+                    "Continue with the current question instead."
+                ),
+            )
+
+        return {
+            "question": question,
+            "answer": previous["answer"],
+            "can_go_back": previous_index > 0,
+        }
 
 
 def generate_and_store_next(
