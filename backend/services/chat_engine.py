@@ -5,7 +5,10 @@ import time
 
 import httpx
 from adaptive_engine import MODEL_NAME, client
-from research import format_research, gather_research, needs_research
+try:
+    from services.research import format_research, gather_research, needs_research
+except ImportError:
+    from research import format_research, gather_research, needs_research
 
 
 logger = logging.getLogger(__name__)
