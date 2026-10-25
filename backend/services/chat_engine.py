@@ -391,11 +391,18 @@ def _call_providers(request_messages: list[dict]) -> dict:
             max_completion_tokens=MAX_COMPLETION_TOKENS,
         )
     except Exception as exc:
-        failures.append(("Groq", exc))
-        logger.warning(
-            "Groq chat response failed (%s); starting provider failover.",
-            type(exc).__name__,
-        )
+      failures.append(("Groq", exc))
+
+    status_code = getattr(exc, "status_code", None)
+    error_message = str(exc)[:500]
+
+    logger.warning(
+        "Groq failed: type=%s status=%s message=%s; "
+        "starting provider failover.",
+        type(exc).__name__,
+        status_code,
+        error_message,
+    )
 
     for name, key_env, url_env, model_env in FALLBACK_PROVIDERS:
         api_key = os.getenv(key_env, "").strip()

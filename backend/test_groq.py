@@ -1,37 +1,31 @@
-
 import os
-from dotenv import load_dotenv
-from groq import Groq
-
-load_dotenv()
-
-api_key = os.getenv("GROQ_API_KEY")
-if not api_key:
-    raise RuntimeError("GROQ_API_KEY is missing from backend/.env")
-
-client = Groq(api_key=api_key)
-
-response = client.chat.completions.create(
-    model="openai/gpt-oss-120b",
-    messages=[
-        {
-            "role": "system",
-            "content": (
-                "You are the question-planning engine for Stratify.AI. "
-                "Generate one useful, context-aware follow-up question. "
-                "Do not assume facts that the user has not provided."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "The user is a student who wants to choose a career, "
-                "but has not yet shared their interests. Generate the "
-                "single most useful next question."
-            ),
-        },
-    ],
-    max_completion_tokens=300,
-)
-
-print(response.choices[0].message.content)
+ 
+try:
+    from dotenv import load_dotenv
+ 
+    load_dotenv()
+except ImportError:
+    pass
+ 
+from database import get_connection, init_db
+ 
+print("DATABASE_URL set:", bool(os.environ.get("DATABASE_URL")))
+ 
+init_db()
+print("init_db OK (tables created or already exist)")
+ 
+with get_connection() as db:
+    version = db.execute("SELECT version() AS v").fetchone()["v"]
+    print("Connected to:", version[:40])
+ 
+    tables = db.execute(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = 'public' ORDER BY table_name"
+    ).fetchall()
+    print("Tables:", [t["table_name"] for t in tables])
+ 
+    users = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    print("Users in database:", users)
+ 
+print("All good.")
+ 

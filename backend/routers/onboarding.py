@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-import sqlite3
+import psycopg
 import uuid
 
 from datetime import datetime, timedelta, timezone
@@ -91,7 +91,7 @@ def ensure_onboarding_schema() -> None:
         columns = {
             row["name"]
             for row in db.execute(
-                "PRAGMA table_info(onboarding_sessions)"
+                "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'onboarding_sessions'"
             ).fetchall()
         }
 
@@ -114,7 +114,7 @@ def ensure_onboarding_schema() -> None:
         answer_columns = {
             row["name"]
             for row in db.execute(
-                "PRAGMA table_info(onboarding_answers)"
+                "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'onboarding_answers'"
             ).fetchall()
         }
         if "question_text" not in answer_columns:
@@ -956,7 +956,7 @@ def submit_answer(
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
-            except sqlite3.IntegrityError:
+            except psycopg.IntegrityError:
                 raise HTTPException(
                     status_code=409,
                     detail=(
