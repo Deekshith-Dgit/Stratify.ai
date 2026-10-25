@@ -798,7 +798,7 @@ def start_onboarding(
     session_id = str(uuid.uuid4())
 
     with get_connection() as db:
-        db.execute("BEGIN IMMEDIATE")
+        db.execute("SELECT id FROM users WHERE id = ? FOR UPDATE", (user["id"],))
 
         db.execute(
             """
@@ -844,7 +844,8 @@ def submit_answer(
     user_id = user["id"]
 
     with get_connection() as db:
-        db.execute("BEGIN IMMEDIATE")
+        db.execute("SELECT id FROM users WHERE id = ? FOR UPDATE", (user["id"],))
+        
 
         session = get_owned_session(
             db,
